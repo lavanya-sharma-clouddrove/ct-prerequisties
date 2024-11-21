@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates a hosted zone for subdomain.
+
+Parameters:
+  DomainName:
+    Type: String
+  MasterAccountId:
+    Type: String
+    Default: ""
+
+Conditions: 
+  UsePseudoAccountId: !Equals [!Ref MasterAccountId, ""]
+
+Resources:
+
+  Route53HostedZone: 
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+
+  CreateRoute53RecordSet:
+    Type: Custom::NameServers
+    Properties:
+      ServiceToken:
+        !If
+        - UsePseudoAccountId
+        - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:CreateRoute53RecordSet"
+        - !Sub "arn:aws:sns:${AWS::Region}:${MasterAccountId}:CreateRoute53RecordSet"
+      DomainName: !Ref DomainName
+      NameServers: !GetAtt Route53HostedZone.NameServers

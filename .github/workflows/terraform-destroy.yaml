@@ -1,0 +1,123 @@
+name: Delete CloudFormation Stack or Stack Set
+
+on:
+  workflow_dispatch:
+    inputs:
+      DELETE_STACK:
+        description: "Check to delete a CloudFormation stack"
+        type: boolean
+        default: false
+        required: true
+      DELETE_STACK_SET:
+        description: "Check to delete a CloudFormation stack set"
+        type: boolean
+        default: false
+        required: true
+      STACK_NAME:
+        description: "The CloudFormation stack name to delete (if DELETE_STACK is checked)"
+        required: false
+      STACK_SET_NAME:
+        description: "The CloudFormation stack set name to delete (if DELETE_STACK_SET is checked)"
+        required: false
+      ACCOUNTS:
+        description: "Comma-separated AWS account IDs for the stack set (if DELETE_STACK_SET is checked)"
+        required: false
+      AWS_REGION:
+        description: "AWS region to operate in"
+        default: "us-east-1"
+
+permissions:
+  id-token: write
+  contents: read        
+
+jobs:
+  delete-stack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_OIDC_ROLE }}  
+          aws-region: ${{ github.event.inputs.AWS_REGION }}
+
+      - name: Run CloudFormation delete script
+        run: |
+          #!/bin/bash
+
+          # Function to delete a CloudFormation stack
+          delete_stack() {
+            stack_name=$1
+            echo "Deleting stack: $stack_name"
+            aws cloudformation delete-stack --stack-name "$stack_name"
+            # Wait for a moment to allow the delete command to process
+            sleep 5
+            echo "Stack $stack_name deletion initiated."
+          }
+
+          # Function to delete a CloudFormation stack set
+          delete_stack_set() {
+            stack_set_name=$1
+            accounts=$2
+            region=$3
+
+            echo "Deleting stack instances for stack set: $stack_set_name"
+            operation_id=$(aws cloudformation delete-stack-instances \
+                --stack-set-name "$stack_set_name" \
+                --regions "$region" \
+                --accounts $accounts \
+                --retain-stacks \
+                --operation-preferences FailureToleranceCount=0,MaxConcurrentCount=1 \
+                --query 'OperationId' --output text)
+
+            echo "Operation ID: $operation_id"
+            # Wait for a moment to allow the delete command to process
+            sleep 5
+
+            # Check if any stack instances exist
+            stack_instances=$(aws cloudformation list-stack-instances --stack-set-name "$stack_set_name" --query 'Summaries[*].StackInstanceStatus' --output text)
+
+            if [ -z "$stack_instances" ]; then
+              echo "No stack instances found for $stack_set_name. Proceeding to delete stack set."
+            else
+              echo "Stack instances still exist: $stack_instances."
+              echo "Proceeding to delete stack set: $stack_set_name"
+            fi
+
+            # Now delete the stack set after ensuring stack instances are deleted or if none existed
+            aws cloudformation delete-stack-set --stack-set-name "$stack_set_name"
+            echo "Stack set $stack_set_name deleted successfully."
+          }
+
+          # Main script execution
+          DELETE_STACK="${{ github.event.inputs.DELETE_STACK }}"
+          DELETE_STACK_SET="${{ github.event.inputs.DELETE_STACK_SET }}"
+          STACK_NAME="${{ github.event.inputs.STACK_NAME }}"
+          STACK_SET_NAME="${{ github.event.inputs.STACK_SET_NAME }}"
+          ACCOUNTS="${{ github.event.inputs.ACCOUNTS }}"
+          REGION="${{ github.event.inputs.AWS_REGION }}"
+
+          # Conditional logic based on user input
+          if [ "$DELETE_STACK" = "true" ]; then
+            if [ -z "$STACK_NAME" ]; then
+              echo "Error: STACK_NAME is required to delete the stack."
+              exit 1
+            fi
+            delete_stack "$STACK_NAME"
+          fi
+
+          if [ "$DELETE_STACK_SET" = "true" ]; then
+            if [ -z "$STACK_SET_NAME" ] || [ -z "$ACCOUNTS" ]; then
+              echo "Error: STACK_SET_NAME and ACCOUNTS are required to delete the stack set."
+              exit 1
+            fi
+            delete_stack_set "$STACK_SET_NAME" "$ACCOUNTS" "$REGION"
+          fi
+
+          if [ "$DELETE_STACK" = "false" ] && [ "$DELETE_STACK_SET" = "false" ]; then
+            echo "Error: No action selected. Please check either DELETE_STACK or DELETE_STACK_SET."
+            exit 1
+          fi
